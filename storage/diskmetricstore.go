@@ -81,6 +81,7 @@ func NewDiskMetricStore(
 	persistenceInterval time.Duration,
 	gatherPredefinedHelpFrom prometheus.Gatherer,
 	logger log.Logger,
+	timeToLive time.Duration,
 ) *DiskMetricStore {
 	// TODO: Do that outside of the constructor to allow the HTTP server to
 	//  serve /-/healthy and /-/ready earlier.
@@ -102,6 +103,7 @@ func NewDiskMetricStore(
 	}
 
 	go dms.loop(persistenceInterval)
+	go dms.doCleanUpInReguarInterval(timeToLive)
 	return dms
 }
 
@@ -605,4 +607,33 @@ func (s labelPairs) Swap(i, j int) {
 
 func (s labelPairs) Less(i, j int) bool {
 	return s[i].GetName() < s[j].GetName()
+}
+
+func (dms *DiskMetricStore) doCleanUpInReguarInterval(timeToLive time.Duration) {
+	if timeToLive == 0 {
+		return
+	}
+	for {
+		dms.cleanupStaleValues(timeToLive)
+		timer1 := time.NewTimer(60 * time.Second)
+		<-timer1.C
+	}
+}
+
+func (dms *DiskMetricStore) cleanupStaleValues(timeToLive time.Duration) {
+	dms.lock.RLock()
+	defer dms.lock.RUnlock()
+
+	cleanupCycleStartTime := time.Now()
+
+	for metricID, group := range dms.metricGroups {
+		for metricName, tmf := range group.Metrics {
+			if tmf.Timestamp.Add(timeToLive).Before(cleanupCycleStartTime) {
+				delete(group.Metrics, metricName)
+			}
+		}
+		if len(group.Metrics) == 0 {
+			delete(dms.metricGroups, metricID)
+		}
+	}
 }
